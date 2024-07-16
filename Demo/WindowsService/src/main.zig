@@ -4,23 +4,15 @@ const c = @cImport({
     @cInclude("windows.h");
 });
 
-// 手动实现 isWhiteSpace 函数
-fn isWhiteSpace(s: u8) bool {
-    return s == ' ' or s == '\t' or s == '\n' or s == '\r';
-}
+fn trimWhitespace(s: []const u8) []const u8 {
+    var start: usize = 0;
+    var end: usize = s.len;
 
-// 手动实现 trim 函数
-fn trim(s: []u8) []u8 {
-    var start = 0;
-    var end = s.len;
+    // 找到第一个非空白字符
+    while (start < end and std.ascii.isWhitespace(s[start])) : (start += 1) {}
 
-    while (start < end and isWhiteSpace(s[start])) {
-        start += 1;
-    }
-
-    while (end > start and isWhiteSpace(s[end - 1])) {
-        end -= 1;
-    }
+    // 找到最后一个非空白字符
+    while (end > start and std.ascii.isWhitespace(s[end - 1])) : (end -= 1) {}
 
     return s[start..end];
 }
@@ -42,7 +34,7 @@ pub fn main() !void {
 
         const input = try stdin.readUntilDelimiterOrEof(&input_buffer, '\n');
         if (input) |valid_input| {
-            const input_str = trim(input_buffer[0..valid_input.len]);
+            const input_str = trimWhitespace(input_buffer[0..valid_input.len]);
 
             if (std.mem.eql(u8, input_str, "1")) {
                 try stdout.print("{s}\n", .{"你选择了选项一"});
