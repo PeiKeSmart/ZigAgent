@@ -12,9 +12,18 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     //const allocator = std.heap.page_allocator; // 初始化一个全局可用的内存分配器实例
 
-    var child = std.process.Child.init(&[_][]const u8{ "dotnet", "restore" }, allocator);
+    var child = std.process.Child.init(&[_][]const u8{ "ping", "baidu.com" }, allocator);
 
     try child.spawn();
+    const term = try child.wait();
+
+    std.debug.print("Command failed with exit code {d}\n", .{term.Exited});
+
+    child = std.process.Child.init(&[_][]const u8{ "dotnet", "restore" }, allocator);
+
+    try child.spawn();
+    const term1 = try child.wait();
+    std.debug.print("Command failed with exit code {d}\n", .{term1.Exited});
 
     // const stdout = std.io.getStdOut().writer();
     // try stdout.print("{s}", .{child.stdout});
