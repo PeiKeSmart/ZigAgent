@@ -12,14 +12,14 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     //const allocator = std.heap.page_allocator; // 初始化一个全局可用的内存分配器实例
 
-    var child = std.process.Child.init(&[_][]const u8{ "ping", "baidu.com" }, allocator);
+    // var child = std.process.Child.init(&[_][]const u8{ "ping", "baidu.com" }, allocator);
 
-    try child.spawn();
-    const term = try child.wait();
+    // try child.spawn();
+    // const term = try child.wait();
 
-    std.debug.print("Command failed with exit code {d}\n", .{term.Exited});
+    // std.debug.print("Command failed with exit code {d}\n", .{term.Exited});
 
-    child = std.process.Child.init(&[_][]const u8{ "dotnet", "restore" }, allocator);
+    var child = std.process.Child.init(&[_][]const u8{ "dotnet", "restore" }, allocator);
 
     try child.spawn();
     const term1 = try child.wait();
@@ -37,6 +37,18 @@ pub fn main() !void {
 
     // 打印当前工作目录的路径
     try std.io.getStdOut().writer().print("Current working directory: {s}\n", .{real_path});
+
+    child = std.process.Child.init(&[_][]const u8{ "dotnet", "clean" }, allocator);
+
+    try child.spawn();
+    const term2 = try child.wait();
+    std.debug.print("Command failed with exit code {d}\n", .{term2.Exited});
+
+    child = std.process.Child.init(&[_][]const u8{ "dotnet", "publish", "-c", "Release", "-r", "linux-x64", "-o", "./publish" }, allocator);
+
+    try child.spawn();
+    const term3 = try child.wait();
+    std.debug.print("Command failed with exit code {d}\n", .{term3.Exited});
 
     // const stdout = std.io.getStdOut().writer();
     // try stdout.print("{s}", .{child.stdout});
