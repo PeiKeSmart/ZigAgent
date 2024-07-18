@@ -25,6 +25,19 @@ pub fn main() !void {
     const term1 = try child.wait();
     std.debug.print("Command failed with exit code {d}\n", .{term1.Exited});
 
+    // // 处理文件夹的对象
+    // const current = try std.fs.cwd().openDir(".", .{});
+    // try std.io.getStdOut().writer().print("Current working directory: {}\n", .{current});
+
+    // 获取当前工作目录的句柄
+    const cwd = std.fs.cwd();
+    // 获取当前工作目录的绝对路径
+    const real_path = try cwd.realpathAlloc(allocator, ".");
+    defer allocator.free(real_path);
+
+    // 打印当前工作目录的路径
+    try std.io.getStdOut().writer().print("Current working directory: {s}\n", .{real_path});
+
     // const stdout = std.io.getStdOut().writer();
     // try stdout.print("{s}", .{child.stdout});
 }
