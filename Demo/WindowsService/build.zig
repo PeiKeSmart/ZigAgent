@@ -36,6 +36,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const zzig = b.dependency("zzig", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("zzig", zzig.module("zzig"));
+
     exe.linkLibC();
 
     // This declares intent for the executable to be installed into the
