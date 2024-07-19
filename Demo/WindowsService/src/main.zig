@@ -1,24 +1,82 @@
 const std = @import("std");
+const windows = @import("std").os.windows;
 
-pub fn main() !void {
-    // Prints to stderr (it's a shortcut based on `std.io.getStdErr()`)
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+const ServiceStatus = struct {
+    dwServiceType: u32,
+    dwCurrentState: u32,
+    dwControlsAccepted: u32,
+    dwWin32ExitCode: u32,
+    dwServiceSpecificExitCode: u32,
+    dwCheckPoint: u32,
+    dwWaitHint: u32,
+};
 
-    // stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    const stdout_file = std.io.getStdOut().writer();
-    var bw = std.io.bufferedWriter(stdout_file);
-    const stdout = bw.writer();
+var serviceStatus: ServiceStatus = undefined;
+var hStatus: windows.Handle = windows.INVALID_HANDLE_VALUE;
 
-    try stdout.print("Run `zig build test` to run the tests.\n", .{});
+fn serviceMain(argc: c_int, argv: [*][*]const u8) void {
+    hStatus = windows.RegisterServiceCtrlHandlerA("MyService", controlHandler);
+    if (hStatus == windows.INVALID_HANDLE_VALUE) {
+        return;
+    }
 
-    try bw.flush(); // don't forget to flush!
+    serviceStatus = ServiceStatus{
+        .dwServiceType = windows.SERVICE_WIN32_OWN_PROCESS,
+        .dwCurrentState = windows.SERVICE_START_PENDING,
+        .dwControlsAccepted = windows.SERVICE_ACCEPT_STOP | windows.SERVICE_ACCEPT_SHUTDOWN,
+        .dwWin32ExitCode = 0,
+        .dwServiceSpecificExitCode = 0,
+        .dwCheckPoint = 0,
+        .dwWaitHint = 0,
+    };
+
+    if (initService()) {
+        serviceStatus.dwCurrentState = windows.SERVICE_RUNNING;
+        windows.SetServiceStatus(hStatus, &serviceStatus);
+    } else {
+        serviceStatus.dwCurrentState = windows.SERVICE_STOPPED;
+        windows.SetServiceStatus(hStatus, &serviceStatus);
+        return;
+    }
+
+    while (serviceStatus.dwCurrentState == windows.SERVICE_RUNNING) {
+        // 模拟一些工作，通过睡眠来模拟
+        windows.Sleep(3000);
+    }
 }
 
-test "simple test" {
-    var list = std.ArrayList(i32).init(std.testing.allocator);
-    defer list.deinit(); // try commenting this out and see if zig detects the memory leak!
-    try list.append(42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
+pub fn main() anyerror!void {
+    const serviceMainPtr: windows.SERVICE_MAIN_FUNCTION = serviceMain;
+    const serviceTable: [2]windows.SERVICE_TABLE_ENTRY = [_]windows.SERVICE_TABLE_ENTRY{
+        windows.SERVICE_TABLE_ENTRY{
+            .lpServiceName = "MyService",
+            .lpServiceProc = serviceMainPtr,
+        },
+        windows.SERVICE_TABLE_ENTRY{
+            .lpServiceName = null,
+            .lpServiceProc = null,
+        },
+    };
+
+    if (!windows.StartServiceCtrlDispatcher(&serviceTable)) {
+        std.debug.print("Error: {}\n", .{windows.GetLastError()});
+    }
+}
+
+fn controlHandler(request: u32) void {
+    switch (request) {
+        windows.SERVICE_CONTROL_STOP, windows.SERVICE_CONTROL_SHUTDOWN => {
+            serviceStatus.dwCurrentState = windows.SERVICE_STOPPED;
+            windows.SetServiceStatus(hStatus, &serviceStatus);
+            return;
+        },
+        else => {},
+    }
+
+    windows.SetServiceStatus(hStatus, &serviceStatus);
+}
+
+fn initService() bool {
+    // 服务的初始化代码
+    return true; // 返回 true 表示成功
 }
