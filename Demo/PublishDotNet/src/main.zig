@@ -4,6 +4,9 @@ const c = @cImport({
     @cInclude("windows.h");
 });
 
+const File = @import("zzig").File;
+const XTrace = @import("zzig").XTrace;
+
 pub fn main() !void {
     _ = c.SetConsoleOutputCP(c.CP_UTF8); // 输出中文时不乱码
 
@@ -29,10 +32,8 @@ pub fn main() !void {
     // const current = try std.fs.cwd().openDir(".", .{});
     // try std.io.getStdOut().writer().print("Current working directory: {}\n", .{current});
 
-    // 获取当前工作目录的句柄
-    const cwd = std.fs.cwd();
-    // 获取当前工作目录的绝对路径
-    const real_path = try cwd.realpathAlloc(allocator, ".");
+    // // 获取当前工作目录的绝对路径
+    const real_path = try File.CurrentPath(allocator);
     defer allocator.free(real_path);
 
     // 打印当前工作目录的路径
