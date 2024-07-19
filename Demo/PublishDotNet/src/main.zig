@@ -38,7 +38,13 @@ pub fn main() !void {
     // 打印当前工作目录的路径
     try std.io.getStdOut().writer().print("Current working directory: {s}\n", .{real_path});
 
+    // 指定工作目录
+    const working_dir = real_path;
+
     child = std.process.Child.init(&[_][]const u8{ "dotnet", "clean" }, allocator);
+
+    // 设置工作目录
+    child.cwd = working_dir;
 
     try child.spawn();
     const term2 = try child.wait();
