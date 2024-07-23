@@ -95,6 +95,7 @@ pub fn main() !void {
     const ss = everything.StartServiceCtrlDispatcherA(&serviceTable[0]);
 
     std.debug.print("value:{d}\n", .{ss});
+    logz.warn().int("StartServiceCtrlDispatcher", ss).log();
 
     if (ss == 0) {
         const err = GetLastError();
