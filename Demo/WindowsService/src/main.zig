@@ -21,9 +21,27 @@ extern "kernel32" fn GetLastError() u32;
 
 const SERVICE_CONTROL_STOP = 0x00000001;
 
+var ServiceName: [*:0]u8 = undefined;
+
 fn handlerFunction(dwControl: u32) callconv(windows.WINAPI) void {
     // 处理服务控制请求的逻辑
     std.debug.print("Service control request: {}\n", .{dwControl});
+}
+
+fn ServiceMain(argc: u32, argv: ?*?[*:0]u8) callconv(windows.WINAPI) void {
+    std.debug.print("{any}\n", .{argc});
+    std.debug.print("{any}\n", .{argv});
+
+    // const serviceHandle = everything.RegisterServiceCtrlHandlerA(ServiceName, handlerFunction);
+
+    // std.debug.print("{any}\n", .{serviceHandle});
+
+    // // 初始化服务
+    // // 处理启动逻辑
+    // while (true) {
+    //     // 服务运行的主要逻辑
+    //     // 处理服务的具体任务
+    // }
 }
 
 pub fn main() !void {
@@ -32,7 +50,7 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     //const allocator = std.heap.page_allocator; // 初始化一个全局可用的内存分配器实例
 
-    const MyServiceName = "MyServiceName";
+    const MyServiceName = "btPanel";
     const serviceNameSize = MyServiceName.len + 1; // 包括终止符
     const data = try allocator.alloc(u8, serviceNameSize);
 
@@ -43,17 +61,27 @@ pub fn main() !void {
     // 这里可以对ServiceName进行操作
     defer allocator.free(data); // 使用完后记得释放内存
 
-    const handler: everything.LPHANDLER_FUNCTION = handlerFunction;
+    const const_data: [*:0]u8 = @ptrCast(data);
+    ServiceName = const_data;
 
-    //const const_data: [*:0]const u8 = &data;
-    const const_data: [*:0]const u8 = @ptrCast(data);
+    const serviceTable: [1]everything.SERVICE_TABLE_ENTRYA = .{
+        .{ .lpServiceName = ServiceName, .lpServiceProc = ServiceMain },
+    };
 
-    // 注册控制处理程序
-    const serviceHandle = everything.RegisterServiceCtrlHandlerA(const_data, handler);
-    std.debug.print("Failed to register service control handler: {}\n", .{serviceHandle});
-    // if (handler == null) {
-    //     const err = GetLastError();
-    //     std.debug.print("Failed to register service control handler: {}\n", .{err});
-    //     return Error.RegisterServiceCtrlHandlerFailed;
+    const ss = everything.StartServiceCtrlDispatcherA(&serviceTable[0]);
+
+    std.debug.print("value:{d}\n", .{ss});
+
+    // if (everything.StartServiceCtrlDispatcherA(&serviceTable[0])) {
+    //     // 处理错误
     // }
+
+    // // 注册控制处理程序
+    // const serviceHandle = everything.RegisterServiceCtrlHandlerA(const_data, handler);
+    // std.debug.print("Failed to register service control handler: {}\n", .{serviceHandle});
+    // // if (handler == null) {
+    // //     const err = GetLastError();
+    // //     std.debug.print("Failed to register service control handler: {}\n", .{err});
+    // //     return Error.RegisterServiceCtrlHandlerFailed;
+    // // }
 }

@@ -17,9 +17,19 @@ pub const LPSERVICE_MAIN_FUNCTIONA = *const fn (
     lpServiceArgVectors: ?*?PSTR,
 ) callconv(@import("std").os.windows.WINAPI) void;
 
+pub const LPSERVICE_MAIN_FUNCTIONW = *const fn (
+    dwNumServicesArgs: u32,
+    lpServiceArgVectors: ?*?PWSTR,
+) callconv(@import("std").os.windows.WINAPI) void;
+
 pub const SERVICE_TABLE_ENTRYA = extern struct {
     lpServiceName: ?PSTR,
     lpServiceProc: ?LPSERVICE_MAIN_FUNCTIONA,
+};
+
+pub const SERVICE_TABLE_ENTRYW = extern struct {
+    lpServiceName: ?PWSTR,
+    lpServiceProc: ?LPSERVICE_MAIN_FUNCTIONW,
 };
 
 // TODO: this type is limited to platform 'windows5.1.2600'
@@ -35,6 +45,16 @@ pub extern "advapi32" fn RegisterServiceCtrlHandlerA(
     lpHandlerProc: ?LPHANDLER_FUNCTION,
 ) callconv(@import("std").os.windows.WINAPI) SERVICE_STATUS_HANDLE;
 
+// TODO: this type is limited to platform 'windows5.1.2600'
+pub extern "advapi32" fn StartServiceCtrlDispatcherA(
+    lpServiceStartTable: ?*const SERVICE_TABLE_ENTRYA,
+) callconv(@import("std").os.windows.WINAPI) BOOL;
+
+// TODO: this type is limited to platform 'windows5.1.2600'
+pub extern "advapi32" fn StartServiceCtrlDispatcherW(
+    lpServiceStartTable: ?*const SERVICE_TABLE_ENTRYW,
+) callconv(@import("std").os.windows.WINAPI) BOOL;
+
 const thismodule = @This();
 pub usingnamespace switch (@import("../zig.zig").unicode_mode) {
     .ansi => struct {
@@ -44,4 +64,6 @@ pub usingnamespace switch (@import("../zig.zig").unicode_mode) {
     .unspecified => struct {},
 };
 
+const BOOL = @import("../foundation.zig").BOOL;
 const PSTR = @import("../foundation.zig").PSTR;
+const PWSTR = @import("../foundation.zig").PWSTR;
