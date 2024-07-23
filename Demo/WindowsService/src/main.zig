@@ -27,23 +27,36 @@ var ServiceName: [*:0]u8 = undefined;
 
 fn handlerFunction(dwControl: u32) callconv(windows.WINAPI) void {
     // 处理服务控制请求的逻辑
-    std.debug.print("Service control request: {}\n", .{dwControl});
+    std.debug.print("Service control request: {d}\n", .{dwControl});
 }
 
 fn ServiceMain(argc: u32, argv: ?*?[*:0]u8) callconv(windows.WINAPI) void {
     std.debug.print("{any}\n", .{argc});
     std.debug.print("{any}\n", .{argv});
 
-    // const serviceHandle = everything.RegisterServiceCtrlHandlerA(ServiceName, handlerFunction);
+    logz.warn().string("ServiceMain", "进来了").log();
+    logz.warn().stringZ("ServiceMain：ServiceName", ServiceName).log();
 
-    // std.debug.print("{any}\n", .{serviceHandle});
+    const serviceHandle = everything.RegisterServiceCtrlHandlerA(ServiceName, handlerFunction);
 
-    // // 初始化服务
-    // // 处理启动逻辑
-    // while (true) {
-    //     // 服务运行的主要逻辑
-    //     // 处理服务的具体任务
-    // }
+    if (serviceHandle == 0) {
+        const err = GetLastError();
+        //std.debug.print("Failed to register service control handler: {}\n", .{err});
+        logz.warn().fmt("serviceHandle", "Failed to register service control handler: {}", .{err}).log();
+        return;
+    }
+    logz.warn().fmt("serviceHandle", "{any}", .{serviceHandle}).log();
+
+    //std.debug.print("{any}\n", .{serviceHandle});
+
+    // 初始化服务
+    // 处理启动逻辑
+    while (true) {
+        std.time.sleep(5 * std.time.ns_per_s);
+        // 服务运行的主要逻辑
+        // 处理服务的具体任务
+        logz.warn().string("ServiceMain", "进行中").log();
+    }
 }
 
 pub fn main() !void {
@@ -60,7 +73,7 @@ pub fn main() !void {
         .buffer_size = 4096,
         .large_buffer_count = 8,
         .large_buffer_size = 16384,
-        .output = .{ .file = "log.log" },
+        .output = .{ .file = "d:\\log.log" },
         //.output = .stdout,
         .encoding = .logfmt,
     });
