@@ -1,82 +1,59 @@
 const std = @import("std");
-const windows = @import("std").os.windows;
+const c = @cImport({
+    @cInclude("windows.h");
+});
+const windows = std.os.windows;
 
-const ServiceStatus = struct {
-    dwServiceType: u32,
-    dwCurrentState: u32,
-    dwControlsAccepted: u32,
-    dwWin32ExitCode: u32,
-    dwServiceSpecificExitCode: u32,
-    dwCheckPoint: u32,
-    dwWaitHint: u32,
+const everything = @import("win32.zig").everything;
+
+// 定义 c_void 作为 *u8 类型
+const c_void = *u8;
+
+// 自定义错误类型
+const Error = error{
+    OpenSCManagerFailed,
+    CreateServiceFailed,
+    RegisterServiceCtrlHandlerFailed,
+    SetServiceStatusFailed,
 };
 
-var serviceStatus: ServiceStatus = undefined;
-var hStatus: windows.Handle = windows.INVALID_HANDLE_VALUE;
+extern "kernel32" fn GetLastError() u32;
 
-fn serviceMain(argc: c_int, argv: [*][*]const u8) void {
-    hStatus = windows.RegisterServiceCtrlHandlerA("MyService", controlHandler);
-    if (hStatus == windows.INVALID_HANDLE_VALUE) {
-        return;
-    }
+const SERVICE_CONTROL_STOP = 0x00000001;
 
-    serviceStatus = ServiceStatus{
-        .dwServiceType = windows.SERVICE_WIN32_OWN_PROCESS,
-        .dwCurrentState = windows.SERVICE_START_PENDING,
-        .dwControlsAccepted = windows.SERVICE_ACCEPT_STOP | windows.SERVICE_ACCEPT_SHUTDOWN,
-        .dwWin32ExitCode = 0,
-        .dwServiceSpecificExitCode = 0,
-        .dwCheckPoint = 0,
-        .dwWaitHint = 0,
-    };
-
-    if (initService()) {
-        serviceStatus.dwCurrentState = windows.SERVICE_RUNNING;
-        windows.SetServiceStatus(hStatus, &serviceStatus);
-    } else {
-        serviceStatus.dwCurrentState = windows.SERVICE_STOPPED;
-        windows.SetServiceStatus(hStatus, &serviceStatus);
-        return;
-    }
-
-    while (serviceStatus.dwCurrentState == windows.SERVICE_RUNNING) {
-        // 模拟一些工作，通过睡眠来模拟
-        windows.Sleep(3000);
-    }
+fn handlerFunction(dwControl: u32) callconv(windows.WINAPI) void {
+    // 处理服务控制请求的逻辑
+    std.debug.print("Service control request: {}\n", .{dwControl});
 }
 
-pub fn main() anyerror!void {
-    const serviceMainPtr: windows.SERVICE_MAIN_FUNCTION = serviceMain;
-    const serviceTable: [2]windows.SERVICE_TABLE_ENTRY = [_]windows.SERVICE_TABLE_ENTRY{
-        windows.SERVICE_TABLE_ENTRY{
-            .lpServiceName = "MyService",
-            .lpServiceProc = serviceMainPtr,
-        },
-        windows.SERVICE_TABLE_ENTRY{
-            .lpServiceName = null,
-            .lpServiceProc = null,
-        },
-    };
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){}; // 安全的分配器，可以防止双重释放（double-free）、使用后释放（use-after-free），并且能够检测内存泄漏
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+    //const allocator = std.heap.page_allocator; // 初始化一个全局可用的内存分配器实例
 
-    if (!windows.StartServiceCtrlDispatcher(&serviceTable)) {
-        std.debug.print("Error: {}\n", .{windows.GetLastError()});
-    }
-}
+    const MyServiceName = "MyServiceName";
+    const serviceNameSize = MyServiceName.len + 1; // 包括终止符
+    const data = try allocator.alloc(u8, serviceNameSize);
 
-fn controlHandler(request: u32) void {
-    switch (request) {
-        windows.SERVICE_CONTROL_STOP, windows.SERVICE_CONTROL_SHUTDOWN => {
-            serviceStatus.dwCurrentState = windows.SERVICE_STOPPED;
-            windows.SetServiceStatus(hStatus, &serviceStatus);
-            return;
-        },
-        else => {},
-    }
+    // 使用std.mem.copy来复制字符串
+    std.mem.copyForwards(u8, data, MyServiceName);
+    data[MyServiceName.len] = 0; // 添加字符串终止符
 
-    windows.SetServiceStatus(hStatus, &serviceStatus);
-}
+    // 这里可以对ServiceName进行操作
+    defer allocator.free(data); // 使用完后记得释放内存
 
-fn initService() bool {
-    // 服务的初始化代码
-    return true; // 返回 true 表示成功
+    const handler: everything.LPHANDLER_FUNCTION = handlerFunction;
+
+    //const const_data: [*:0]const u8 = &data;
+    const const_data: [*:0]const u8 = @ptrCast(data);
+
+    // 注册控制处理程序
+    const serviceHandle = everything.RegisterServiceCtrlHandlerA(const_data, handler);
+    std.debug.print("Failed to register service control handler: {}\n", .{serviceHandle});
+    // if (handler == null) {
+    //     const err = GetLastError();
+    //     std.debug.print("Failed to register service control handler: {}\n", .{err});
+    //     return Error.RegisterServiceCtrlHandlerFailed;
+    // }
 }

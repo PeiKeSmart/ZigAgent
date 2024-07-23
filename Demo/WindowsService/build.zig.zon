@@ -22,12 +22,10 @@
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
-    .dependencies = .{
-        .zzig = .{
-            .url = "https://github.com/qcjxberin/zzig/archive/main.tar.gz",
-            .hash = "12209a0391def82ea5ba091d046eeb436742e725ea556085fbc0540bdba79888edab",
-        },
-    },
+    .dependencies = .{ .zzig = .{
+        .url = "https://github.com/qcjxberin/zzig/archive/main.tar.gz",
+        .hash = "12209a0391def82ea5ba091d046eeb436742e725ea556085fbc0540bdba79888edab",
+    } },
     .paths = .{
         "build.zig",
         "build.zig.zon",
