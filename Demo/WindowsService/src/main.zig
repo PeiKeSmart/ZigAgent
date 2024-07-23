@@ -1,8 +1,10 @@
 const std = @import("std");
+const windows = std.os.windows;
+
 const c = @cImport({
     @cInclude("windows.h");
 });
-const windows = std.os.windows;
+const logz = @import("logz");
 
 const everything = @import("win32.zig").everything;
 
@@ -50,9 +52,31 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     //const allocator = std.heap.page_allocator; // 初始化一个全局可用的内存分配器实例
 
-    const MyServiceName = "btPanel";
+    // 日志
+    // initialize a logging pool
+    try logz.setup(allocator, .{
+        .level = .Warn,
+        .pool_size = 100,
+        .buffer_size = 4096,
+        .large_buffer_count = 8,
+        .large_buffer_size = 16384,
+        .output = .{ .file = "log.log" },
+        //.output = .stdout,
+        .encoding = .logfmt,
+    });
+    defer logz.deinit();
+
+    var logger = logz.loggerL(.Info)
+        .stringSafe("ctx", "db.setup")
+        .string("path", "test");
+    defer logger.log();
+    errdefer |err| _ = logger.err(err).level(.Fatal);
+
+    const MyServiceName = "zigTest";
     const serviceNameSize = MyServiceName.len + 1; // 包括终止符
     const data = try allocator.alloc(u8, serviceNameSize);
+
+    logz.warn().string("MyServiceName", MyServiceName).log();
 
     // 使用std.mem.copy来复制字符串
     std.mem.copyForwards(u8, data, MyServiceName);
@@ -71,6 +95,11 @@ pub fn main() !void {
     const ss = everything.StartServiceCtrlDispatcherA(&serviceTable[0]);
 
     std.debug.print("value:{d}\n", .{ss});
+
+    if (ss == 0) {
+        const err = GetLastError();
+        std.debug.print("{any}\n", .{err});
+    }
 
     // if (everything.StartServiceCtrlDispatcherA(&serviceTable[0])) {
     //     // 处理错误

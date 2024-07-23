@@ -36,6 +36,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const logz = b.dependency("logz", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    exe.root_module.addImport("logz", logz.module("logz"));
+
     const zzig = b.dependency("zzig", .{
         .target = target,
         .optimize = optimize,
