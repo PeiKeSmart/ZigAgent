@@ -21,13 +21,26 @@ const Error = error{
 
 extern "kernel32" fn GetLastError() u32;
 
-const SERVICE_CONTROL_STOP = 0x00000001;
-
 var ServiceName: [*:0]u8 = undefined;
+var serviceStatus: everything.SERVICE_STATUS = undefined;
+var serviceHandle: isize = undefined;
 
 fn handlerFunction(dwControl: u32) callconv(windows.WINAPI) void {
     // 处理服务控制请求的逻辑
-    std.debug.print("Service control request: {d}\n", .{dwControl});
+    //std.debug.print("Service control request: {d}\n", .{dwControl});
+    logz.warn().fmt("handlerFunction", "Service control request: {d}", .{dwControl}).log();
+
+    if (dwControl == everything.SERVICE_CONTROL_STOP) { // 停止
+        serviceStatus.dwCurrentState = everything.SERVICE_STATUS_CURRENT_STATE.STOPPED;
+        const result = everything.SetServiceStatus(serviceHandle, &serviceStatus);
+        logz.warn().fmt("SetServiceStatus:stop:", "{any}", .{result}).log();
+        //std.debug.print("SetServiceStatus: {d}\n", .{result});
+        // 服务停止
+        // 处理停止逻辑
+        // 释放资源
+        // 退出服务
+        return;
+    }
 }
 
 fn ServiceMain(argc: u32, argv: ?*?[*:0]u8) callconv(windows.WINAPI) void {
@@ -37,7 +50,19 @@ fn ServiceMain(argc: u32, argv: ?*?[*:0]u8) callconv(windows.WINAPI) void {
     logz.warn().string("ServiceMain", "进来了").log();
     logz.warn().stringZ("ServiceMain：ServiceName", ServiceName).log();
 
-    const serviceHandle = everything.RegisterServiceCtrlHandlerA(ServiceName, handlerFunction);
+    serviceStatus = everything.SERVICE_STATUS{
+        .dwServiceType = everything.ENUM_SERVICE_TYPE{
+            .WIN32_OWN_PROCESS = 1, // 设置为 WIN32_OWN_PROCESS
+        },
+        .dwCurrentState = everything.SERVICE_STATUS_CURRENT_STATE.START_PENDING,
+        .dwControlsAccepted = everything.SERVICE_ACCEPT_SHUTDOWN | everything.SERVICE_ACCEPT_STOP,
+        .dwWin32ExitCode = 0, // 没有错误
+        .dwServiceSpecificExitCode = 0,
+        .dwCheckPoint = 0,
+        .dwWaitHint = 0,
+    };
+
+    serviceHandle = everything.RegisterServiceCtrlHandlerA(ServiceName, handlerFunction);
 
     if (serviceHandle == 0) {
         const err = GetLastError();
@@ -48,6 +73,11 @@ fn ServiceMain(argc: u32, argv: ?*?[*:0]u8) callconv(windows.WINAPI) void {
     logz.warn().fmt("serviceHandle", "{any}", .{serviceHandle}).log();
 
     //std.debug.print("{any}\n", .{serviceHandle});
+
+    serviceStatus.dwCurrentState = everything.SERVICE_STATUS_CURRENT_STATE.RUNNING;
+
+    const result = everything.SetServiceStatus(serviceHandle, &serviceStatus);
+    logz.warn().fmt("SetServiceStatus", "{any}", .{result}).log();
 
     // 初始化服务
     // 处理启动逻辑
