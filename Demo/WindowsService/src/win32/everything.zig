@@ -10,3 +10,4 @@ pub const SERVICE_STATUS_CURRENT_STATE = @import("../win32.zig").system.services
 pub const SERVICE_ACCEPT_SHUTDOWN = @import("../win32.zig").system.services.SERVICE_ACCEPT_SHUTDOWN;
 pub const SERVICE_ACCEPT_STOP = @import("../win32.zig").system.services.SERVICE_ACCEPT_STOP;
 pub const SERVICE_CONTROL_STOP = @import("../win32.zig").system.services.SERVICE_CONTROL_STOP;
+pub const SERVICE_CONTROL_SHUTDOWN = @import("../win32.zig").system.services.SERVICE_CONTROL_SHUTDOWN;

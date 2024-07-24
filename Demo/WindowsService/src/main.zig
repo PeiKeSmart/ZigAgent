@@ -33,13 +33,18 @@ fn handlerFunction(dwControl: u32) callconv(windows.WINAPI) void {
     if (dwControl == everything.SERVICE_CONTROL_STOP) { // 停止
         serviceStatus.dwCurrentState = everything.SERVICE_STATUS_CURRENT_STATE.STOPPED;
         const result = everything.SetServiceStatus(serviceHandle, &serviceStatus);
-        logz.warn().fmt("SetServiceStatus:stop:", "{any}", .{result}).log();
+        logz.warn().fmt("SetServiceStatus:SERVICE_CONTROL_STOP:", "{any}", .{result}).log();
         //std.debug.print("SetServiceStatus: {d}\n", .{result});
         // 服务停止
         // 处理停止逻辑
         // 释放资源
         // 退出服务
         return;
+    } else if (dwControl == everything.SERVICE_CONTROL_SHUTDOWN) {
+        serviceStatus.dwCurrentState = everything.SERVICE_STATUS_CURRENT_STATE.STOPPED;
+        const result = everything.SetServiceStatus(serviceHandle, &serviceStatus);
+        logz.warn().fmt("SetServiceStatus:SERVICE_CONTROL_SHUTDOWN:", "{any}", .{result}).log();
+        //std.debug.print("SetServiceStatus: {d}\n", .{result});
     }
 }
 
