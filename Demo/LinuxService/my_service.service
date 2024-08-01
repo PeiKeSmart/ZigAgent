@@ -1,0 +1,11 @@
+[Unit]
+Description=ZigLinuxService 
+After=network.target
+
+[Service]
+ExecStart=/home/berin/LinuxService
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
