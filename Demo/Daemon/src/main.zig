@@ -16,6 +16,6 @@ fn daemon() !void {
         std.debug.print("This is the child process with PID: {}\n", .{pid});
     } else {
         // 这是父进程的代码
-        std.debug.print("This is the parent process with child PID: {}\n", .{pid});
+        std.debug.print("This is the parent process with child PID: {}\nend\n", .{pid});
     }
 }

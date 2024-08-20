@@ -1,2 +1,4 @@
 **/.zig-cache/*
 **/zig-cache/*/*
+Demo/Daemon/zig-out/bin/Daemon
+Demo/Daemon/zig-out/lib/libDaemon.a
