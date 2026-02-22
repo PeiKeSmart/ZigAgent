@@ -15,13 +15,25 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
-    const lib = b.addStaticLibrary(.{
-        .name = "ZigStarAgent",
-        // In this case the main source file is merely a path, however, in more
-        // complicated build scripts, this could be a generated file.
+    // 引入 zzig 依赖模块
+    const zzig_dep = b.dependency("zzig", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    const zzig_mod = zzig_dep.module("zzig");
+
+    // 静态库 root 模块
+    const lib_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    lib_module.addImport("zzig", zzig_mod);
+
+    const lib = b.addLibrary(.{
+        .name = "ZigStarAgent",
+        .root_module = lib_module,
+        .linkage = .static,
     });
 
     // This declares intent for the library to be installed into the standard
@@ -29,11 +41,17 @@ pub fn build(b: *std.Build) void {
     // running `zig build`).
     b.installArtifact(lib);
 
-    const exe = b.addExecutable(.{
-        .name = "ZigStarAgent",
+    // 可执行文件 root 模块
+    const exe_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    exe_module.addImport("zzig", zzig_mod);
+
+    const exe = b.addExecutable(.{
+        .name = "ZigStarAgent",
+        .root_module = exe_module,
     });
 
     // This declares intent for the executable to be installed into the
@@ -66,18 +84,28 @@ pub fn build(b: *std.Build) void {
 
     // Creates a step for unit testing. This only builds the test executable
     // but does not run it.
-    const lib_unit_tests = b.addTest(.{
+    const lib_test_module = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    lib_test_module.addImport("zzig", zzig_mod);
+
+    const lib_unit_tests = b.addTest(.{
+        .root_module = lib_test_module,
+    });
 
     const run_lib_unit_tests = b.addRunArtifact(lib_unit_tests);
 
-    const exe_unit_tests = b.addTest(.{
+    const exe_test_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+    });
+    exe_test_module.addImport("zzig", zzig_mod);
+
+    const exe_unit_tests = b.addTest(.{
+        .root_module = exe_test_module,
     });
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);

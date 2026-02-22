@@ -1,0 +1,36 @@
+# Zig 构建产物
+zig-out/
+zig-cache/
+.zig-cache/
+
+# 依赖缓存
+.zigmod/
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.suo
+*.user
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# 操作系统
+desktop.ini
+ehthumbs.db
+
+# 日志
+*.log
+logs/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 临时文件
+*.tmp
+*.bak
+*.orig
