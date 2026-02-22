@@ -229,6 +229,38 @@ fn relaunchElevatedUnix(allocator: std.mem.Allocator, exe_path: []const u8, arg:
     return term == .Exited and term.Exited == 0;
 }
 
+/// 检查服务是否正在运行
+pub fn isRunning(allocator: std.mem.Allocator, config: agent.Config) bool {
+    return switch (builtin.os.tag) {
+        .linux => isRunningLinux(config),
+        .windows => isRunningWindows(allocator, config),
+        else => false,
+    };
+}
+
+fn isRunningLinux(config: agent.Config) bool {
+    // systemctl is-active 退出码 0 = active
+    const result = std.process.Child.run(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &[_][]const u8{ "systemctl", "is-active", config.service_name },
+    }) catch return false;
+    defer std.heap.page_allocator.free(result.stdout);
+    defer std.heap.page_allocator.free(result.stderr);
+    return result.term == .Exited and result.term.Exited == 0;
+}
+
+fn isRunningWindows(allocator: std.mem.Allocator, config: agent.Config) bool {
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "sc", "queryex", config.service_name },
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+    // STATE: 4 = RUNNING（数字码与系统语言无关）
+    return std.mem.indexOf(u8, result.stdout, ": 4 ") != null or
+        std.mem.indexOf(u8, result.stdout, ":  4 ") != null;
+}
+
 /// 检查服务是否已安装
 pub fn isInstalled(allocator: std.mem.Allocator, config: agent.Config) bool {
     return switch (builtin.os.tag) {
@@ -494,4 +526,249 @@ fn runSc(allocator: std.mem.Allocator, action: []const u8, name: []const u8) !Re
         return Result{ .ok = try std.fmt.allocPrint(allocator, "sc {s} [{s}] 成功", .{ action, name }) };
     }
     return Result{ .err = try std.fmt.allocPrint(allocator, "sc {s} 失败 (退出码 {d})\n{s}", .{ action, result.term.Exited, result.stderr }) };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 服务运行入口（供 main.zig -s 模式调用）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 以服务方式运行 Agent：
+/// - Windows: 向 SCM 注册 ServiceMain / CtrlHandler，正确响应启动/停止指令
+/// - Linux:   直接运行（由 systemd 管理生命周期）
+pub fn runAsService(config: agent.Config) void {
+    switch (builtin.os.tag) {
+        .windows => runAsServiceWindows(config),
+        else => agent.run(config),
+    }
+}
+
+// ─── Windows SCM 集成 ─────────────────────────────────────────────────────────
+//
+// Windows 服务必须通过以下流程与 SCM 握手，否则启动超时（错误29）：
+//   1. StartServiceCtrlDispatcherW → SCM 在新线程调用 ServiceMain
+//   2. ServiceMain: RegisterServiceCtrlHandlerExW → SetServiceStatus(START_PENDING)
+//      → [初始化] → SetServiceStatus(RUNNING) → WaitForSingleObject(停止事件)
+//      → SetServiceStatus(STOPPED)
+//   3. HandlerEx: 收到 STOP/SHUTDOWN 信号 → 设置 stop_signal + SetEvent(停止事件)
+
+// 全局变量（Windows 回调机制必须）
+var g_status_handle: if (builtin.os.tag == .windows) std.os.windows.HANDLE else void =
+    if (builtin.os.tag == .windows) undefined else {};
+var g_stop_event: if (builtin.os.tag == .windows) std.os.windows.HANDLE else void =
+    if (builtin.os.tag == .windows) undefined else {};
+var g_svc_config: agent.Config = agent.default_config;
+
+fn runAsServiceWindows(config: agent.Config) void {
+    const w = std.os.windows;
+    const winapi = std.builtin.CallingConvention.winapi;
+
+    // SERVICE_STATUS 结构体
+    const SERVICE_STATUS = extern struct {
+        dwServiceType: w.DWORD,
+        dwCurrentState: w.DWORD,
+        dwControlsAccepted: w.DWORD,
+        dwWin32ExitCode: w.DWORD,
+        dwServiceSpecificExitCode: w.DWORD,
+        dwCheckPoint: w.DWORD,
+        dwWaitHint: w.DWORD,
+    };
+
+    // SERVICE_TABLE_ENTRYW 结构体
+    const SERVICE_TABLE_ENTRYW = extern struct {
+        lpServiceName: ?[*:0]const u16,
+        lpServiceProc: ?*const fn (w.DWORD, [*][*:0]u16) callconv(winapi) void,
+    };
+
+    const StartServiceCtrlDispatcherW = struct {
+        extern "advapi32" fn StartServiceCtrlDispatcherW(
+            lpServiceStartTable: [*]const SERVICE_TABLE_ENTRYW,
+        ) callconv(winapi) w.BOOL;
+    }.StartServiceCtrlDispatcherW;
+
+    // 传递配置给 ServiceMain 回调（通过全局变量）
+    g_svc_config = config;
+
+    // ServiceMain 回调：由 SCM 在独立线程调用
+    const serviceMain = struct {
+        fn f(_argc: w.DWORD, _argv: [*][*:0]u16) callconv(winapi) void {
+            _ = _argc;
+            _ = _argv;
+
+            const winapi2 = std.builtin.CallingConvention.winapi;
+            const w2 = std.os.windows;
+
+            // 服务状态常量
+            const SERVICE_WIN32_OWN_PROCESS: w2.DWORD = 0x00000010;
+            const SERVICE_RUNNING: w2.DWORD = 4;
+            const SERVICE_START_PENDING: w2.DWORD = 2;
+            const SERVICE_STOPPED: w2.DWORD = 1;
+            const SERVICE_ACCEPT_STOP: w2.DWORD = 0x00000001;
+            const SERVICE_ACCEPT_SHUTDOWN: w2.DWORD = 0x00000004;
+            const INFINITE2: w2.DWORD = 0xFFFFFFFF;
+            const NO_ERROR: w2.DWORD = 0;
+
+            const RegisterServiceCtrlHandlerExW = struct {
+                extern "advapi32" fn RegisterServiceCtrlHandlerExW(
+                    lpServiceName: [*:0]const u16,
+                    lpHandlerProc: *const fn (w2.DWORD, w2.DWORD, ?*anyopaque, ?*anyopaque) callconv(winapi2) w2.DWORD,
+                    lpContext: ?*anyopaque,
+                ) callconv(winapi2) ?w2.HANDLE;
+            }.RegisterServiceCtrlHandlerExW;
+
+            const SetServiceStatus2 = struct {
+                extern "advapi32" fn SetServiceStatus(
+                    hServiceStatus: w2.HANDLE,
+                    lpServiceStatus: *SERVICE_STATUS,
+                ) callconv(winapi2) w2.BOOL;
+            }.SetServiceStatus;
+
+            const CreateEventW = struct {
+                extern "kernel32" fn CreateEventW(
+                    lpEventAttributes: ?*anyopaque,
+                    bManualReset: w2.BOOL,
+                    bInitialState: w2.BOOL,
+                    lpName: ?[*:0]const u16,
+                ) callconv(winapi2) ?w2.HANDLE;
+            }.CreateEventW;
+
+            const WaitForSingleObject2 = struct {
+                extern "kernel32" fn WaitForSingleObject(
+                    hHandle: w2.HANDLE,
+                    dwMilliseconds: w2.DWORD,
+                ) callconv(winapi2) w2.DWORD;
+            }.WaitForSingleObject;
+
+            const CloseHandle2 = struct {
+                extern "kernel32" fn CloseHandle(hObject: w2.HANDLE) callconv(winapi2) w2.BOOL;
+            }.CloseHandle;
+
+            // 控制处理器（HandlerEx）
+            const handlerEx = struct {
+                fn h(control: w2.DWORD, _et: w2.DWORD, _ed: ?*anyopaque, _ctx: ?*anyopaque) callconv(winapi2) w2.DWORD {
+                    _ = _et;
+                    _ = _ed;
+                    _ = _ctx;
+
+                    const winapi3 = std.builtin.CallingConvention.winapi;
+                    const w3 = std.os.windows;
+                    const SERVICE_CONTROL_STOP: w3.DWORD = 0x00000001;
+                    const SERVICE_CONTROL_SHUTDOWN: w3.DWORD = 0x00000005;
+                    const SERVICE_STOP_PENDING2: w3.DWORD = 3;
+                    const NO_ERROR2: w3.DWORD = 0;
+
+                    const SetServiceStatus3 = struct {
+                        extern "advapi32" fn SetServiceStatus(
+                            hServiceStatus: w3.HANDLE,
+                            lpServiceStatus: *SERVICE_STATUS,
+                        ) callconv(winapi3) w3.BOOL;
+                    }.SetServiceStatus;
+
+                    const SetEvent2 = struct {
+                        extern "kernel32" fn SetEvent(hEvent: w3.HANDLE) callconv(winapi3) w3.BOOL;
+                    }.SetEvent;
+
+                    switch (control) {
+                        SERVICE_CONTROL_STOP, SERVICE_CONTROL_SHUTDOWN => {
+                            // 上报"停止中"
+                            var ss = SERVICE_STATUS{
+                                .dwServiceType = 0x00000010,
+                                .dwCurrentState = SERVICE_STOP_PENDING2,
+                                .dwControlsAccepted = 0,
+                                .dwWin32ExitCode = 0,
+                                .dwServiceSpecificExitCode = 0,
+                                .dwCheckPoint = 1,
+                                .dwWaitHint = 5000,
+                            };
+                            _ = SetServiceStatus3(g_status_handle, &ss);
+                            // 通知 agent.run 停止
+                            agent.stop_signal.store(true, .release);
+                            // 触发停止事件，解除 WaitForSingleObject
+                            _ = SetEvent2(g_stop_event);
+                        },
+                        else => {},
+                    }
+                    return NO_ERROR2;
+                }
+            }.h;
+
+            // 服务名称转 UTF-16
+            var name_buf: [256:0]u16 = undefined;
+            const name_len = std.unicode.utf8ToUtf16Le(
+                name_buf[0..255],
+                g_svc_config.service_name,
+            ) catch 0;
+            name_buf[name_len] = 0;
+
+            // 注册控制处理器
+            const handle = RegisterServiceCtrlHandlerExW(&name_buf, handlerEx, null) orelse {
+                return; // 注册失败，退出（SCM 会标记服务启动失败）
+            };
+            g_status_handle = handle;
+
+            // 上报 START_PENDING
+            var status = SERVICE_STATUS{
+                .dwServiceType = SERVICE_WIN32_OWN_PROCESS,
+                .dwCurrentState = SERVICE_START_PENDING,
+                .dwControlsAccepted = 0,
+                .dwWin32ExitCode = NO_ERROR,
+                .dwServiceSpecificExitCode = NO_ERROR,
+                .dwCheckPoint = 1,
+                .dwWaitHint = 3000,
+            };
+            _ = SetServiceStatus2(g_status_handle, &status);
+
+            // 创建手动重置的停止事件
+            g_stop_event = CreateEventW(null, 1, 0, null) orelse {
+                status.dwCurrentState = SERVICE_STOPPED;
+                status.dwWin32ExitCode = 1;
+                _ = SetServiceStatus2(g_status_handle, &status);
+                return;
+            };
+            defer _ = CloseHandle2(g_stop_event);
+
+            // 重置停止信号
+            agent.stop_signal.store(false, .release);
+
+            // 上报 RUNNING（SCM 确认服务已启动）
+            status.dwCurrentState = SERVICE_RUNNING;
+            status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_SHUTDOWN;
+            status.dwCheckPoint = 0;
+            status.dwWaitHint = 0;
+            _ = SetServiceStatus2(g_status_handle, &status);
+
+            // 在独立线程运行 agent 主循环，避免阻塞 ServiceMain
+            const t = std.Thread.spawn(.{}, agent.run, .{g_svc_config}) catch {
+                status.dwCurrentState = SERVICE_STOPPED;
+                status.dwWin32ExitCode = 1;
+                _ = SetServiceStatus2(g_status_handle, &status);
+                return;
+            };
+
+            // 等待停止事件（CtrlHandler 会触发）
+            _ = WaitForSingleObject2(g_stop_event, INFINITE2);
+
+            // 等待 agent 线程退出
+            t.join();
+
+            // 上报 STOPPED
+            status.dwCurrentState = SERVICE_STOPPED;
+            status.dwControlsAccepted = 0;
+            status.dwCheckPoint = 0;
+            status.dwWaitHint = 0;
+            status.dwWin32ExitCode = NO_ERROR;
+            _ = SetServiceStatus2(g_status_handle, &status);
+        }
+    }.f;
+
+    // 构建 ServiceTable：末尾必须是 null 哨兵
+    const table = [_]SERVICE_TABLE_ENTRYW{
+        .{
+            .lpServiceName = std.unicode.utf8ToUtf16LeStringLiteral("StarAgent"),
+            .lpServiceProc = serviceMain,
+        },
+        .{ .lpServiceName = null, .lpServiceProc = null }, // 终止符
+    };
+
+    // StartServiceCtrlDispatcherW 阻塞，直到所有服务退出
+    _ = StartServiceCtrlDispatcherW(&table);
 }

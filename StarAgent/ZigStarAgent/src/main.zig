@@ -49,8 +49,8 @@ pub fn main() !void {
     if (args.len > 1) {
         const cmd = args[1];
         if (std.mem.eql(u8, cmd, "-s") or std.mem.eql(u8, cmd, "--service")) {
-            // 服务模式：直接运行 Agent 主循环
-            agent.run(config);
+            // 服务模式：向 SCM 注册并运行（Windows），或直接运行（Linux/systemd）
+            service.runAsService(config);
             return;
         } else if (std.mem.eql(u8, cmd, "--install") or std.mem.eql(u8, cmd, "-install") or std.mem.eql(u8, cmd, "-i")) {
             const r = try service.install(allocator, config, exe_path);
@@ -98,8 +98,9 @@ pub fn main() !void {
     }
 
     while (true) {
-        // 每轮刷新安装状态
+        // 每轮刷新安装/运行状态
         const installed = service.isInstalled(allocator, config);
+        const running = installed and service.isRunning(allocator, config);
 
         // 打印信息头
         try printHeader(allocator, config, exe_path);
@@ -107,12 +108,18 @@ pub fn main() !void {
         // 打印菜单标题
         std.debug.print(bold ++ bright_yellow ++ "序号  功能名称    命令行参数" ++ reset ++ "\n", .{});
 
-        // 打印选项（根据安装状态动态决定）
+        // 打印选项（根据安装/运行状态动态决定）
         std.debug.print("  1) " ++ bright_cyan ++ "显示状态" ++ reset ++ "    -status\n", .{});
         if (installed) {
             std.debug.print("  2) " ++ bright_cyan ++ "卸载服务" ++ reset ++ "    -u\n", .{});
-            std.debug.print("  3) " ++ bright_cyan ++ "启动服务" ++ reset ++ "    -start\n", .{});
-            std.debug.print("  4) " ++ bright_cyan ++ "停止服务" ++ reset ++ "    -stop\n", .{});
+            if (!running) {
+                // 仅在已停止时显示"启动"
+                std.debug.print("  3) " ++ bright_cyan ++ "启动服务" ++ reset ++ "    -start\n", .{});
+            }
+            if (running) {
+                // 仅在运行中时显示"停止"
+                std.debug.print("  4) " ++ bright_cyan ++ "停止服务" ++ reset ++ "    -stop\n", .{});
+            }
             std.debug.print("  9) " ++ bright_cyan ++ "重启服务" ++ reset ++ "    -restart\n", .{});
         } else {
             std.debug.print("  2) " ++ bright_cyan ++ "安装服务" ++ reset ++ "    -i\n", .{});
@@ -146,11 +153,11 @@ pub fn main() !void {
                 if (printResult(r)) continue; // 成功：直接刷新菜单
                 pressEnter(); // 失败：等用户确认
             },
-            '3' => if (installed) {
+            '3' => if (installed and !running) {
                 const r = try service.start(allocator, config);
                 if (!printResult(r)) pressEnter();
             },
-            '4' => if (installed) {
+            '4' => if (installed and running) {
                 const r = try service.stop(allocator, config);
                 if (!printResult(r)) pressEnter();
             },
