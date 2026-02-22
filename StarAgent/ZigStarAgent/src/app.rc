@@ -1,0 +1,3 @@
+// app.rc — 嵌入 UAC 管理员权限清单
+// 资源类型 24 (RT_MANIFEST)，ID 1 表示应用程序级别的 manifest
+1 24 "app.manifest"

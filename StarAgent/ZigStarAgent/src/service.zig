@@ -71,11 +71,12 @@ pub fn isAdmin() bool {
 }
 
 /// 以提升权限重新运行当前程序并等待完成
-/// exe_path: 当前可执行路径；arg: 传给新进程的参数（如 "-i"、"-u"）
-/// 返回 true 表示提权进程正常退出
-pub fn relaunchElevated(allocator: std.mem.Allocator, exe_path: []const u8, arg: []const u8) !bool {
+/// exe_path: 当前可执行路径；arg: 传给新进程的参数（如 "-i"、"-u"，菜单模式传空字符串）
+/// wait: true = 等待子进程结束（CLI 操作）；false = 启动后立即返回（菜单整体提权）
+/// 返回 true 表示成功发起提权（wait=false 时不代表操作已完成）
+pub fn relaunchElevated(allocator: std.mem.Allocator, exe_path: []const u8, arg: []const u8, wait: bool) !bool {
     return switch (builtin.os.tag) {
-        .windows => relaunchElevatedWindows(allocator, exe_path, arg),
+        .windows => relaunchElevatedWindows(allocator, exe_path, arg, wait),
         .linux, .macos => relaunchElevatedUnix(allocator, exe_path, arg),
         else => false,
     };
@@ -125,28 +126,92 @@ fn isAdminWindows() bool {
     return elevation != 0;
 }
 
-/// Windows: 通过 PowerShell Start-Process -Verb RunAs 触发 UAC，等待提权进程完成
-fn relaunchElevatedWindows(allocator: std.mem.Allocator, exe_path: []const u8, arg: []const u8) !bool {
-    // 路径用双引号包裹，防止含空格的路径出错
-    const ps_cmd = try std.fmt.allocPrint(
-        allocator,
-        "Start-Process -FilePath \"{s}\" -ArgumentList \"{s}\" -Verb RunAs -Wait",
-        .{ exe_path, arg },
-    );
-    defer allocator.free(ps_cmd);
+/// Windows: 通过 ShellExecuteExW + runas verb 直接触发 UAC，无需 PowerShell 中转。
+/// wait=false（菜单整体提权）：新进程可见，当前进程立即返回。
+/// wait=true（CLI 单次操作）：隐藏新进程，等待其完成后返回结果。
+fn relaunchElevatedWindows(allocator: std.mem.Allocator, exe_path: []const u8, arg: []const u8, wait: bool) !bool {
+    const w = std.os.windows;
+    const winapi = std.builtin.CallingConvention.winapi;
 
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &[_][]const u8{
-            "powershell",   "-NoProfile", "-NonInteractive",
-            "-WindowStyle", "Hidden",     "-Command",
-            ps_cmd,
-        },
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
+    // SHELLEXECUTEINFOW 结构体（完整布局，匹配 shellapi.h）
+    const SHELLEXECUTEINFOW = extern struct {
+        cbSize: w.DWORD,
+        fMask: w.ULONG,
+        hwnd: ?*anyopaque,
+        lpVerb: ?[*:0]const u16,
+        lpFile: ?[*:0]const u16,
+        lpParameters: ?[*:0]const u16,
+        lpDirectory: ?[*:0]const u16,
+        nShow: c_int,
+        hInstApp: ?*anyopaque,
+        lpIDList: ?*anyopaque,
+        lpClass: ?[*:0]const u16,
+        hkeyClass: ?*anyopaque,
+        dwHotKey: w.DWORD,
+        hIconOrMonitor: ?w.HANDLE,
+        hProcess: ?w.HANDLE,
+    };
 
-    return result.term == .Exited and result.term.Exited == 0;
+    const ShellExecuteExW = struct {
+        extern "shell32" fn ShellExecuteExW(pExecInfo: *SHELLEXECUTEINFOW) callconv(winapi) w.BOOL;
+    }.ShellExecuteExW;
+
+    const WaitForSingleObject = struct {
+        extern "kernel32" fn WaitForSingleObject(hHandle: w.HANDLE, dwMilliseconds: w.DWORD) callconv(winapi) w.DWORD;
+    }.WaitForSingleObject;
+
+    const CloseHandle = struct {
+        extern "kernel32" fn CloseHandle(hObject: w.HANDLE) callconv(winapi) w.BOOL;
+    }.CloseHandle;
+
+    // SEE_MASK_NOCLOSEPROCESS: 保持 hProcess 有效供 WaitForSingleObject 使用
+    const SEE_MASK_NOCLOSEPROCESS: w.ULONG = 0x00000040;
+    // wait=false 菜单模式：SW_SHOWNORMAL 让新的管理员窗口正常显示
+    // wait=true  CLI 模式：SW_HIDE 静默执行
+    const SW_SHOWNORMAL: c_int = 1;
+    const SW_HIDE: c_int = 0;
+    const nShow: c_int = if (wait) SW_HIDE else SW_SHOWNORMAL;
+    const INFINITE: w.DWORD = 0xFFFFFFFF;
+
+    // UTF-8 → UTF-16LE（WinAPI 宽字符）
+    const exe_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, exe_path);
+    defer allocator.free(exe_w);
+    const arg_w = try std.unicode.utf8ToUtf16LeAllocZ(allocator, arg);
+    defer allocator.free(arg_w);
+    // "runas" verb 触发 UAC 提权
+    const verb_w = comptime std.unicode.utf8ToUtf16LeStringLiteral("runas");
+
+    var sei = SHELLEXECUTEINFOW{
+        .cbSize = @sizeOf(SHELLEXECUTEINFOW),
+        .fMask = SEE_MASK_NOCLOSEPROCESS,
+        .hwnd = null,
+        .lpVerb = verb_w,
+        .lpFile = exe_w.ptr,
+        .lpParameters = arg_w.ptr,
+        .lpDirectory = null,
+        .nShow = nShow,
+        .hInstApp = null,
+        .lpIDList = null,
+        .lpClass = null,
+        .hkeyClass = null,
+        .dwHotKey = 0,
+        .hIconOrMonitor = null,
+        .hProcess = null,
+    };
+
+    if (ShellExecuteExW(&sei) == 0) {
+        return false; // UAC 被拒绝或调用失败
+    }
+
+    if (sei.hProcess) |hProc| {
+        if (wait) {
+            // CLI 模式：等待子进程完成再返回结果
+            _ = WaitForSingleObject(hProc, INFINITE);
+        }
+        _ = CloseHandle(hProc);
+    }
+
+    return true;
 }
 
 /// Linux/macOS: 用 sudo 重新运行当前程序（继承终端，用户可输入密码）
@@ -183,16 +248,12 @@ fn isInstalledLinux(config: agent.Config) bool {
 fn isInstalledWindows(allocator: std.mem.Allocator, config: agent.Config) bool {
     const result = std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &[_][]const u8{ "sc", "query", config.service_name },
+        .argv = &[_][]const u8{ "sc", "queryex", config.service_name },
     }) catch return false;
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
-    // 错误码 1060 表示服务不存在
-    if (std.mem.indexOf(u8, result.stdout, "1060") != null or
-        std.mem.indexOf(u8, result.stderr, "1060") != null)
-    {
-        return false;
-    }
+    // 退出码 1060 = 未安装（与语言无关）
+    if (result.term == .Exited and result.term.Exited == 1060) return false;
     return result.term == .Exited and result.term.Exited == 0;
 }
 
@@ -321,39 +382,52 @@ fn runSystemctl(allocator: std.mem.Allocator, action: []const u8, unit: []const 
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn getStatusWindows(allocator: std.mem.Allocator, config: agent.Config) ![]u8 {
+    // sc queryex 退出码与系统语言无关：0=存在 1060=未安装
     const result = std.process.Child.run(.{
         .allocator = allocator,
-        .argv = &[_][]const u8{ "sc", "query", config.service_name },
+        .argv = &[_][]const u8{ "sc", "queryex", config.service_name },
     }) catch |err| {
         return std.fmt.allocPrint(allocator, "查询失败: {}", .{err});
     };
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (std.mem.indexOf(u8, result.stdout, "RUNNING") != null) {
-        return try std.fmt.allocPrint(allocator, "Windows 服务 \x1b[32m运行中\x1b[0m", .{});
-    } else if (std.mem.indexOf(u8, result.stdout, "STOPPED") != null) {
-        return try std.fmt.allocPrint(allocator, "Windows 服务 \x1b[33m已停止\x1b[0m", .{});
-    } else if (std.mem.indexOf(u8, result.stdout, "1060") != null or
-        std.mem.indexOf(u8, result.stderr, "1060") != null)
-    {
+    if (result.term == .Exited and result.term.Exited == 1060) {
         return try std.fmt.allocPrint(allocator, "\x1b[31m未安装\x1b[0m", .{});
+    }
+
+    // STATE 数字与语言无关：1=停止 2=启动中 3=停止中 4=运行 5=继续中 6=暂停中 7=暂停
+    if (std.mem.indexOf(u8, result.stdout, ": 4 ") != null or
+        std.mem.indexOf(u8, result.stdout, ":  4 ") != null)
+    {
+        return try std.fmt.allocPrint(allocator, "Windows 服务 \x1b[32m运行中\x1b[0m", .{});
+    } else if (std.mem.indexOf(u8, result.stdout, ": 1 ") != null or
+        std.mem.indexOf(u8, result.stdout, ":  1 ") != null)
+    {
+        return try std.fmt.allocPrint(allocator, "Windows 服务 \x1b[33m已停止\x1b[0m", .{});
+    } else if (std.mem.indexOf(u8, result.stdout, ": 2 ") != null or
+        std.mem.indexOf(u8, result.stdout, ": 3 ") != null)
+    {
+        return try std.fmt.allocPrint(allocator, "Windows 服务 \x1b[33m启动中...\x1b[0m", .{});
+    } else if (std.mem.indexOf(u8, result.stdout, ": 6 ") != null or
+        std.mem.indexOf(u8, result.stdout, ": 7 ") != null)
+    {
+        return try std.fmt.allocPrint(allocator, "Windows 服务 \x1b[33m停止中...\x1b[0m", .{});
     }
     return try std.fmt.allocPrint(allocator, "未知状态", .{});
 }
 
 fn installWindows(allocator: std.mem.Allocator, config: agent.Config, exe_path: []const u8) !Result {
-    // 构造 binpath 值：带引号的可执行路径 + 服务参数
-    const bin_val = try std.fmt.allocPrint(allocator, "\"{s}\" -s", .{exe_path});
+    // binpath 需合并为单个参数，sc.exe 按 key=value 解析，value 含空格须带引号
+    const bin_val = try std.fmt.allocPrint(allocator, "binpath=\"{s}\" -s", .{exe_path});
     defer allocator.free(bin_val);
 
-    // sc create <name> binpath= "<exe> -s" start= auto
+    // sc create <name> binpath="<exe> -s" start=auto obj=LocalSystem
     const create_result = std.process.Child.run(.{
         .allocator = allocator,
         .argv = &[_][]const u8{
-            "sc",       "create", config.service_name,
-            "binpath=", bin_val,  "start=",
-            "auto",     "obj=",   "LocalSystem",
+            "sc",    "create",     config.service_name,
+            bin_val, "start=auto", "obj=LocalSystem",
         },
     }) catch |err| {
         return Result{ .err = try std.fmt.allocPrint(allocator, "sc create 失败: {}", .{err}) };
@@ -362,10 +436,14 @@ fn installWindows(allocator: std.mem.Allocator, config: agent.Config, exe_path: 
     defer allocator.free(create_result.stderr);
 
     if (create_result.term == .Exited and create_result.term.Exited != 0) {
+        const hint: []const u8 = if (create_result.term.Exited == 5)
+            "（权限不足，请以管理员身份运行）"
+        else
+            "";
         return Result{ .err = try std.fmt.allocPrint(
             allocator,
-            "sc create 失败 (需要管理员权限, 退出码 {d}): {s}",
-            .{ create_result.term.Exited, create_result.stderr },
+            "sc create 失败 (退出码 {d}){s}",
+            .{ create_result.term.Exited, hint },
         ) };
     }
 
@@ -387,8 +465,17 @@ fn uninstallWindows(allocator: std.mem.Allocator, config: agent.Config) !Result 
 }
 
 fn restartWindows(allocator: std.mem.Allocator, config: agent.Config) !Result {
+    // 先停止（服务已停止时 sc stop 返回非0，忽略错误继续）
     _ = try runSc(allocator, "stop", config.service_name);
-    std.Thread.sleep(2 * std.time.ns_per_s);
+    // 轮询等待服务真正停止（最多 10 秒）
+    var waited_ms: u32 = 0;
+    while (waited_ms < 10_000) : (waited_ms += 500) {
+        std.Thread.sleep(500 * std.time.ns_per_ms);
+        const s = try getStatusWindows(allocator, config);
+        const stopped = std.mem.indexOf(u8, s, "已停止") != null;
+        allocator.free(s);
+        if (stopped) break;
+    }
     return runSc(allocator, "start", config.service_name);
 }
 

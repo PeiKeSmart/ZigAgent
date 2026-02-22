@@ -54,6 +54,11 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_module,
     });
 
+    // Windows: 嵌入 UAC manifest，启动时自动请求管理员权限（requireAdministrator）
+    if (target.result.os.tag == .windows) {
+        exe.addWin32ResourceFile(.{ .file = b.path("src/app.rc") });
+    }
+
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
