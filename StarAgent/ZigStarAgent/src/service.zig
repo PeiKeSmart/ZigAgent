@@ -424,11 +424,12 @@ fn getStatusWindows(allocator: std.mem.Allocator, config: agent.Config) ![]u8 {
     defer allocator.free(result.stdout);
     defer allocator.free(result.stderr);
 
-    if (result.term == .Exited and result.term.Exited == 1060) {
+    // 退出码非零均视为未安装（1060=明确未安装，其他非零=异常/过渡态，与 isInstalledWindows 保持一致）
+    if (!(result.term == .Exited and result.term.Exited == 0)) {
         return try std.fmt.allocPrint(allocator, "\x1b[31m未安装\x1b[0m", .{});
     }
 
-    // STATE 数字与语言无关：1=停止 2=启动中 3=停止中 4=运行 5=继续中 6=暂停中 7=暂停
+    // STATE 数字与语言无关：1=已停止 2=启动中 3=停止中 4=运行 5=继续中 6=暂停中 7=已暂停
     if (std.mem.indexOf(u8, result.stdout, ": 4 ") != null or
         std.mem.indexOf(u8, result.stdout, ":  4 ") != null)
     {
@@ -438,15 +439,18 @@ fn getStatusWindows(allocator: std.mem.Allocator, config: agent.Config) ![]u8 {
     {
         return try std.fmt.allocPrint(allocator, "Windows 服务 \x1b[33m已停止\x1b[0m", .{});
     } else if (std.mem.indexOf(u8, result.stdout, ": 2 ") != null or
-        std.mem.indexOf(u8, result.stdout, ": 3 ") != null)
+        std.mem.indexOf(u8, result.stdout, ": 5 ") != null)
     {
         return try std.fmt.allocPrint(allocator, "Windows 服务 \x1b[33m启动中...\x1b[0m", .{});
-    } else if (std.mem.indexOf(u8, result.stdout, ": 6 ") != null or
-        std.mem.indexOf(u8, result.stdout, ": 7 ") != null)
+    } else if (std.mem.indexOf(u8, result.stdout, ": 3 ") != null or
+        std.mem.indexOf(u8, result.stdout, ": 6 ") != null)
     {
         return try std.fmt.allocPrint(allocator, "Windows 服务 \x1b[33m停止中...\x1b[0m", .{});
+    } else if (std.mem.indexOf(u8, result.stdout, ": 7 ") != null) {
+        return try std.fmt.allocPrint(allocator, "Windows 服务 \x1b[33m已暂停\x1b[0m", .{});
     }
-    return try std.fmt.allocPrint(allocator, "未知状态", .{});
+    // 退出码为0但输出无法识别STATE（极少见）
+    return try std.fmt.allocPrint(allocator, "Windows 服务 \x1b[33m状态未知\x1b[0m", .{});
 }
 
 fn installWindows(allocator: std.mem.Allocator, config: agent.Config, exe_path: []const u8) !Result {
@@ -485,13 +489,22 @@ fn installWindows(allocator: std.mem.Allocator, config: agent.Config, exe_path: 
         .argv = &[_][]const u8{ "sc", "description", config.service_name, config.description },
     }) catch {};
 
-    // sc start <name>
-    return runSc(allocator, "start", config.service_name);
+    return Result{ .ok = try std.fmt.allocPrint(allocator, "服务 [{s}] 安装成功（可按 3 启动）", .{config.service_name}) };
 }
 
 fn uninstallWindows(allocator: std.mem.Allocator, config: agent.Config) !Result {
     // 先停止
     _ = try runSc(allocator, "stop", config.service_name);
+    // 轮询等待服务真正停止（最多 10 秒），避免 DELETE_PENDING 残留
+    var waited_ms: u32 = 0;
+    while (waited_ms < 10_000) : (waited_ms += 500) {
+        std.Thread.sleep(500 * std.time.ns_per_ms);
+        const s = try getStatusWindows(allocator, config);
+        const stopped = std.mem.indexOf(u8, s, "已停止") != null or
+            std.mem.indexOf(u8, s, "未安装") != null;
+        allocator.free(s);
+        if (stopped) break;
+    }
     // 再删除
     return runSc(allocator, "delete", config.service_name);
 }
