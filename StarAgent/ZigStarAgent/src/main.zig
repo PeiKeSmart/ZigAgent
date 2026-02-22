@@ -1,11 +1,201 @@
+/// main.zig — StarAgent 入口
+///
+/// 直接运行 → 显示交互式菜单
+/// 传入 -s / --service → 以服务模式静默运行（由服务管理器调用）
+/// 传入 --install / --uninstall 等 → 执行对应服务操作后退出
 const std = @import("std");
 
-pub fn main() void {
-    const os = @import("builtin").os;
-    switch (os.tag) {
-        .linux => std.debug.print("Linux\n", .{}),
-        .macos => std.debug.print("macOS\n", .{}),
-        .windows => std.debug.print("Windows\n", .{}),
-        else => std.debug.print("Unknown OS: {}\n", .{os.tag}),
+const zzig = @import("zzig");
+const Console = zzig.Console;
+
+const agent = @import("agent.zig");
+const service = @import("service.zig");
+const input = zzig.Input; // 使用 zzig 库中的跨平台单键输入模块
+
+// ─── ANSI 颜色快捷 ───────────────────────────────────────────────────────────
+const reset = "\x1b[0m";
+const bold = "\x1b[1m";
+const cyan = "\x1b[36m";
+const yellow = "\x1b[33m";
+const green = "\x1b[32m";
+const red = "\x1b[31m";
+const bright_yellow = "\x1b[93m";
+const bright_cyan = "\x1b[96m";
+const bright_green = "\x1b[92m";
+
+// 菜单选项按安装状态动态构建，见 buildMenuItems()
+
+pub fn main() !void {
+    // 初始化内存分配器
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    // 初始化控制台（UTF-8 + ANSI）
+    const console_result = Console.init(.{});
+    defer Console.deinit(console_result);
+
+    // 获取当前可执行路径
+    const exe_path = std.fs.selfExePathAlloc(allocator) catch "<unknown>";
+    defer if (!std.mem.eql(u8, exe_path, "<unknown>")) allocator.free(exe_path);
+
+    const config = agent.default_config;
+
+    // ── 解析命令行参数 ─────────────────────────────────────────────────────────
+    const args = try std.process.argsAlloc(allocator);
+    defer std.process.argsFree(allocator, args);
+
+    if (args.len > 1) {
+        const cmd = args[1];
+        if (std.mem.eql(u8, cmd, "-s") or std.mem.eql(u8, cmd, "--service")) {
+            // 服务模式：直接运行 Agent 主循环
+            agent.run(config);
+            return;
+        } else if (std.mem.eql(u8, cmd, "--install") or std.mem.eql(u8, cmd, "-install") or std.mem.eql(u8, cmd, "-i")) {
+            const r = try service.install(allocator, config, exe_path);
+            printResult(r);
+            return;
+        } else if (std.mem.eql(u8, cmd, "--uninstall") or std.mem.eql(u8, cmd, "-u")) {
+            const r = try service.uninstall(allocator, config);
+            printResult(r);
+            return;
+        } else if (std.mem.eql(u8, cmd, "--stop") or std.mem.eql(u8, cmd, "-stop")) {
+            const r = try service.stop(allocator, config);
+            printResult(r);
+            return;
+        } else if (std.mem.eql(u8, cmd, "--start") or std.mem.eql(u8, cmd, "-start")) {
+            const r = try service.start(allocator, config);
+            printResult(r);
+            return;
+        } else if (std.mem.eql(u8, cmd, "--restart") or std.mem.eql(u8, cmd, "-restart")) {
+            const r = try service.restart(allocator, config);
+            printResult(r);
+            return;
+        } else if (std.mem.eql(u8, cmd, "--status") or std.mem.eql(u8, cmd, "-status")) {
+            const status_str = try service.getStatus(allocator, config);
+            defer allocator.free(status_str);
+            std.debug.print("状态：{s}\n", .{status_str});
+            return;
+        } else if (std.mem.eql(u8, cmd, "--run") or std.mem.eql(u8, cmd, "-run")) {
+            // 前台模拟运行（调试用）
+            std.debug.print(bold ++ cyan ++ "[模拟运行] 按 Ctrl+C 停止\n" ++ reset, .{});
+            agent.run(config);
+            return;
+        }
     }
+
+    // ── 交互式菜单循环 ────────────────────────────────────────────────────────
+    while (true) {
+        // 每轮刷新安装状态
+        const installed = service.isInstalled(allocator, config);
+
+        // 打印信息头
+        try printHeader(allocator, config, exe_path);
+
+        // 打印菜单标题
+        std.debug.print(bold ++ bright_yellow ++ "序号  功能名称    命令行参数" ++ reset ++ "\n", .{});
+
+        // 打印选项（根据安装状态动态决定）
+        std.debug.print("  1) " ++ bright_cyan ++ "显示状态" ++ reset ++ "    -status\n", .{});
+        if (installed) {
+            std.debug.print("  2) " ++ bright_cyan ++ "卸载服务" ++ reset ++ "    -u\n", .{});
+            std.debug.print("  3) " ++ bright_cyan ++ "启动服务" ++ reset ++ "    -start\n", .{});
+            std.debug.print("  4) " ++ bright_cyan ++ "停止服务" ++ reset ++ "    -stop\n", .{});
+            std.debug.print("  9) " ++ bright_cyan ++ "重启服务" ++ reset ++ "    -restart\n", .{});
+        } else {
+            std.debug.print("  2) " ++ bright_cyan ++ "安装服务" ++ reset ++ "    -i\n", .{});
+        }
+        std.debug.print("  5) " ++ bright_cyan ++ "模拟运行" ++ reset ++ "    -run\n", .{});
+        std.debug.print("  0) " ++ bright_cyan ++ "退出" ++ reset ++ "\n", .{});
+        std.debug.print("\n" ++ bright_cyan ++ "请选择: " ++ reset, .{});
+
+        // 单键读取，无需按 Enter
+        const ch = input.readKey() catch continue;
+        // 回显选择并换行
+        std.debug.print("{c}\n", .{ch});
+
+        switch (ch) {
+            '0' => {
+                std.debug.print(yellow ++ "退出。\n" ++ reset, .{});
+                return;
+            },
+            '1' => {
+                const status_str = try service.getStatus(allocator, config);
+                defer allocator.free(status_str);
+                std.debug.print("\n" ++ bold ++ "状态：" ++ reset ++ "{s}\n", .{status_str});
+                try pressEnter();
+            },
+            '2' => {
+                // 安装 或 卸载，需管理员权限
+                if (!service.isAdmin()) {
+                    const arg: []const u8 = if (installed) "-u" else "-i";
+                    std.debug.print(yellow ++ "\n需要管理员权限，正在请求提权...\n" ++ reset, .{});
+                    const ok = try service.relaunchElevated(allocator, exe_path, arg);
+                    if (!ok) {
+                        std.debug.print(red ++ bold ++ "✘ 提权失败或用户取消\n" ++ reset, .{});
+                    }
+                } else {
+                    if (installed) {
+                        const r = try service.uninstall(allocator, config);
+                        printResult(r);
+                    } else {
+                        const r = try service.install(allocator, config, exe_path);
+                        printResult(r);
+                    }
+                }
+                try pressEnter();
+            },
+            '3' => if (installed) {
+                const r = try service.start(allocator, config);
+                printResult(r);
+                try pressEnter();
+            },
+            '4' => if (installed) {
+                const r = try service.stop(allocator, config);
+                printResult(r);
+                try pressEnter();
+            },
+            '9' => if (installed) {
+                const r = try service.restart(allocator, config);
+                printResult(r);
+                try pressEnter();
+            },
+            '5' => {
+                std.debug.print(yellow ++ "\n请在终端中以 -run 参数启动以模拟前台运行。\n" ++ reset, .{});
+                try pressEnter();
+            },
+            else => {
+                std.debug.print(red ++ "无效选项，请重新选择。\n" ++ reset, .{});
+            },
+        }
+    }
+}
+
+// ─── 辅助函数 ─────────────────────────────────────────────────────────────────
+
+/// 打印信息头（仿照截图格式）
+fn printHeader(allocator: std.mem.Allocator, config: agent.Config, exe_path: []const u8) !void {
+    const status_str = try service.getStatus(allocator, config);
+    defer allocator.free(status_str);
+
+    std.debug.print("\n", .{});
+    std.debug.print(bright_yellow ++ bold ++ "服务：" ++ reset ++ "{s}\n", .{config.display_name});
+    std.debug.print(bright_cyan ++ "描述：" ++ reset ++ "{s}\n", .{config.description});
+    std.debug.print(bright_green ++ "状态：" ++ reset ++ "{s}\n", .{status_str});
+    std.debug.print(bright_cyan ++ "路径：" ++ reset ++ "{s} -s\n", .{exe_path});
+    std.debug.print("\n", .{});
+}
+
+/// 打印操作结果
+fn printResult(r: service.Result) void {
+    switch (r) {
+        .ok => |msg| std.debug.print(green ++ bold ++ "✔ {s}\n" ++ reset, .{msg}),
+        .err => |msg| std.debug.print(red ++ bold ++ "✘ {s}\n" ++ reset, .{msg}),
+    }
+}
+
+/// 等待用户按任意键继续
+fn pressEnter() !void {
+    std.debug.print(yellow ++ "\n按任意键继续..." ++ reset, .{});
+    _ = input.readKey() catch {};
 }
