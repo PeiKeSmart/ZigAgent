@@ -12,7 +12,12 @@ const Console = zzig.Console;
 const agent = @import("agent.zig");
 const service = @import("service.zig");
 const cfg_mod = @import("config.zig");
+const logmod = @import("log.zig");
 const input = zzig.Input; // 使用 zzig 库中的跨平台单键输入模块
+
+// ─── 日志覆盖 ─────────────────────────────────────────────────────────────────
+// 将所有 std.log.* 调用重定向到文件日志（服务模式下无控制台，需持久化）
+pub const std_options: std.Options = .{ .logFn = logmod.logFn };
 
 // ─── ANSI 颜色快捷 ───────────────────────────────────────────────────────────
 const reset = "\x1b[0m";
@@ -40,6 +45,26 @@ pub fn main() !void {
     // 获取当前可执行路径
     const exe_path = std.fs.selfExePathAlloc(allocator) catch "<unknown>";
     defer if (!std.mem.eql(u8, exe_path, "<unknown>")) allocator.free(exe_path);
+
+    // ── 初始化文件日志 ────────────────────────────────────────────────────────
+    // 日志文件与可执行文件放在同一目录，命名为 StarAgent.log
+    const app_dir: []const u8 = if (!std.mem.eql(u8, exe_path, "<unknown>"))
+        (std.fs.path.dirname(exe_path) orelse ".")
+    else
+        ".";
+    const log_path = std.fs.path.join(allocator, &.{ app_dir, "StarAgent.log" }) catch null;
+    defer if (log_path) |p| allocator.free(p);
+    if (log_path) |p| {
+        // JSON 配置文件与日志文件同目录，名为 StarAgent.logger.json
+        const cfg_json = std.fs.path.join(allocator, &.{ app_dir, "StarAgent.logger.json" }) catch null;
+        defer if (cfg_json) |c| allocator.free(c);
+        const json_path = cfg_json orelse "StarAgent.logger.json";
+        // .both = 同时写文件和 stderr；服务模式无控制台时 stderr 部分静默失败，文件正常写入
+        logmod.init(allocator, p, json_path, .both) catch |err| {
+            std.debug.print("[main] 日志初始化失败: {}\n", .{err});
+        };
+    }
+    defer logmod.deinit();
 
     // ── 加载 StarAgent.xml 配置文件 ───────────────────────────────────────────
     // 配置文件与可执行文件放在同一目录；首次运行自动生成默认配置
@@ -89,7 +114,8 @@ pub fn main() !void {
     if (args.len > 1) {
         const cmd = args[1];
         if (std.mem.eql(u8, cmd, "-s") or std.mem.eql(u8, cmd, "--service")) {
-            // 服务模式：向 SCM 注册并运行（Windows），或直接运行（Linux/systemd）
+            std.log.info("[main] StarAgent 以服务模式启动", .{});
+            // 向 SCM 注册并运行（Windows），或直接运行（Linux/systemd）
             service.runAsService(allocator, config);
             return;
         } else if (std.mem.eql(u8, cmd, "--install") or std.mem.eql(u8, cmd, "-install") or std.mem.eql(u8, cmd, "-i")) {
