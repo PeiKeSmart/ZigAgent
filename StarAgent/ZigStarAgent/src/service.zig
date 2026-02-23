@@ -548,10 +548,10 @@ fn runSc(allocator: std.mem.Allocator, action: []const u8, name: []const u8) !Re
 /// 以服务方式运行 Agent：
 /// - Windows: 向 SCM 注册 ServiceMain / CtrlHandler，正确响应启动/停止指令
 /// - Linux:   直接运行（由 systemd 管理生命周期）
-pub fn runAsService(config: agent.Config) void {
+pub fn runAsService(allocator: std.mem.Allocator, config: agent.Config) void {
     switch (builtin.os.tag) {
-        .windows => runAsServiceWindows(config),
-        else => agent.run(config),
+        .windows => runAsServiceWindows(allocator, config),
+        else => agent.run(allocator, config),
     }
 }
 
@@ -570,8 +570,15 @@ var g_status_handle: if (builtin.os.tag == .windows) std.os.windows.HANDLE else 
 var g_stop_event: if (builtin.os.tag == .windows) std.os.windows.HANDLE else void =
     if (builtin.os.tag == .windows) undefined else {};
 var g_svc_config: agent.Config = agent.default_config;
+/// agent.run 需要 Allocator；服务模式下通过此全局变量传递
+var g_svc_allocator: std.mem.Allocator = std.heap.page_allocator;
 
-fn runAsServiceWindows(config: agent.Config) void {
+/// Windows 服务线程入口（顶层函数，可被 Thread.spawn 直接引用）
+fn agentRunThread(_: void) void {
+    agent.run(g_svc_allocator, g_svc_config);
+}
+
+fn runAsServiceWindows(allocator: std.mem.Allocator, config: agent.Config) void {
     const w = std.os.windows;
     const winapi = std.builtin.CallingConvention.winapi;
 
@@ -600,8 +607,7 @@ fn runAsServiceWindows(config: agent.Config) void {
 
     // 传递配置给 ServiceMain 回调（通过全局变量）
     g_svc_config = config;
-
-    // ServiceMain 回调：由 SCM 在独立线程调用
+    g_svc_allocator = allocator;
     const serviceMain = struct {
         fn f(_argc: w.DWORD, _argv: [*][*:0]u16) callconv(winapi) void {
             _ = _argc;
@@ -750,7 +756,7 @@ fn runAsServiceWindows(config: agent.Config) void {
             _ = SetServiceStatus2(g_status_handle, &status);
 
             // 在独立线程运行 agent 主循环，避免阻塞 ServiceMain
-            const t = std.Thread.spawn(.{}, agent.run, .{g_svc_config}) catch {
+            const t = std.Thread.spawn(.{}, agentRunThread, .{{}}) catch {
                 status.dwCurrentState = SERVICE_STOPPED;
                 status.dwWin32ExitCode = 1;
                 _ = SetServiceStatus2(g_status_handle, &status);

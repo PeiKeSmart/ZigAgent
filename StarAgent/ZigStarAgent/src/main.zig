@@ -72,6 +72,9 @@ pub fn main() !void {
     const config = agent.Config{
         .debug = star_cfg.debug,
         .local_port = star_cfg.local_port,
+        .delay_ms = star_cfg.delay,
+        // services 生命周期由 cfg_result.arena 管理，在 main 返回前始终有效
+        .services = star_cfg.services,
         // 以下字段保持默认（服务名/描述不随 XML 更改，保持平台注册稳定）
         .service_name = agent.default_config.service_name,
         .display_name = agent.default_config.display_name,
@@ -87,7 +90,7 @@ pub fn main() !void {
         const cmd = args[1];
         if (std.mem.eql(u8, cmd, "-s") or std.mem.eql(u8, cmd, "--service")) {
             // 服务模式：向 SCM 注册并运行（Windows），或直接运行（Linux/systemd）
-            service.runAsService(config);
+            service.runAsService(allocator, config);
             return;
         } else if (std.mem.eql(u8, cmd, "--install") or std.mem.eql(u8, cmd, "-install") or std.mem.eql(u8, cmd, "-i")) {
             const r = try service.install(allocator, config, exe_path);
@@ -112,7 +115,7 @@ pub fn main() !void {
         } else if (std.mem.eql(u8, cmd, "--run") or std.mem.eql(u8, cmd, "-run")) {
             // 前台模拟运行（调试用）
             std.debug.print(bold ++ cyan ++ "[模拟运行] 按 Ctrl+C 停止\n" ++ reset, .{});
-            agent.run(config);
+            agent.run(allocator, config);
             return;
         }
     }
