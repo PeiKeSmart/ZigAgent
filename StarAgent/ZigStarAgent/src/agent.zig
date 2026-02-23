@@ -12,6 +12,10 @@ pub const Config = struct {
     description: []const u8 = "星尘分布式资源调度，部署于每一个节点，连接服务端，支持节点监控、远程发布。",
     /// 心跳间隔（秒）
     heartbeat_secs: u64 = 10,
+    /// 调试模式（true=输出详细日志，对应 XML <Debug>）
+    debug: bool = true,
+    /// 本地监听端口（对应 XML <LocalPort>）
+    local_port: u16 = 5500,
 };
 
 /// 全局默认配置
@@ -23,7 +27,12 @@ pub var stop_signal = std.atomic.Value(bool).init(false);
 
 /// 运行 Agent 主循环（阻塞，直到 stop_signal 被设置或进程退出）
 pub fn run(config: Config) void {
-    std.log.info("[{s}] Agent 启动，心跳间隔 {d}s", .{ config.service_name, config.heartbeat_secs });
+    std.log.info("[{s}] Agent 启动，心跳间隔 {d}s，端口 {d}，调试模式: {}", .{
+        config.service_name,
+        config.heartbeat_secs,
+        config.local_port,
+        config.debug,
+    });
 
     // 将心跳间隔拆分为 500ms 小片段，以便及时响应停止信号
     const tick_ns: u64 = 500 * std.time.ns_per_ms;
@@ -40,7 +49,11 @@ pub fn run(config: Config) void {
             // - 上报节点状态
             // - 接收远程指令
             // - 拉取并执行发布任务
-            std.log.info("[{s}] 心跳中...", .{config.service_name});
+            if (config.debug) {
+                std.log.debug("[{s}] 心跳（调试）port={d}", .{ config.service_name, config.local_port });
+            } else {
+                std.log.info("[{s}] 心跳中...", .{config.service_name});
+            }
         }
     }
 

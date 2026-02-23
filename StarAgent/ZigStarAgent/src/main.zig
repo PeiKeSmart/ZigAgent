@@ -11,6 +11,7 @@ const Console = zzig.Console;
 
 const agent = @import("agent.zig");
 const service = @import("service.zig");
+const cfg_mod = @import("config.zig");
 const input = zzig.Input; // 使用 zzig 库中的跨平台单键输入模块
 
 // ─── ANSI 颜色快捷 ───────────────────────────────────────────────────────────
@@ -40,7 +41,43 @@ pub fn main() !void {
     const exe_path = std.fs.selfExePathAlloc(allocator) catch "<unknown>";
     defer if (!std.mem.eql(u8, exe_path, "<unknown>")) allocator.free(exe_path);
 
-    const config = agent.default_config;
+    // ── 加载 StarAgent.xml 配置文件 ───────────────────────────────────────────
+    // 配置文件与可执行文件放在同一目录；首次运行自动生成默认配置
+    const config_path = blk: {
+        if (!std.mem.eql(u8, exe_path, "<unknown>")) {
+            const dir = std.fs.path.dirname(exe_path) orelse ".";
+            break :blk try std.fs.path.join(allocator, &.{ dir, "StarAgent.xml" });
+        }
+        break :blk try allocator.dupe(u8, "StarAgent.xml");
+    };
+    defer allocator.free(config_path);
+
+    // 若不存在则生成默认配置文件
+    cfg_mod.ensureDefault(allocator, config_path) catch |err| {
+        std.log.warn("[main] 生成默认配置失败: {}", .{err});
+    };
+
+    // 加载配置
+    var cfg_result = cfg_mod.load(allocator, config_path) catch |err| blk: {
+        std.log.warn("[main] 加载配置失败 ({})，使用默认值", .{err});
+        break :blk cfg_mod.ConfigResult{
+            .arena = std.heap.ArenaAllocator.init(allocator),
+            .config = cfg_mod.Config{},
+        };
+    };
+    defer cfg_result.deinit();
+    const star_cfg = cfg_result.config;
+
+    // 从 XML 配置构建 Agent 服务元数据
+    const config = agent.Config{
+        .debug = star_cfg.debug,
+        .local_port = star_cfg.local_port,
+        // 以下字段保持默认（服务名/描述不随 XML 更改，保持平台注册稳定）
+        .service_name = agent.default_config.service_name,
+        .display_name = agent.default_config.display_name,
+        .description = agent.default_config.description,
+        .heartbeat_secs = agent.default_config.heartbeat_secs,
+    };
 
     // ── 解析命令行参数 ─────────────────────────────────────────────────────────
     const args = try std.process.argsAlloc(allocator);
@@ -188,6 +225,10 @@ fn printHeader(allocator: std.mem.Allocator, config: agent.Config, exe_path: []c
     std.debug.print(bright_cyan ++ "描述：" ++ reset ++ "{s}\n", .{config.description});
     std.debug.print(bright_green ++ "状态：" ++ reset ++ "{s}\n", .{status_str});
     std.debug.print(bright_cyan ++ "路径：" ++ reset ++ "{s} -s\n", .{exe_path});
+    std.debug.print(bright_cyan ++ "端口：" ++ reset ++ "{d}  调试：{s}\n", .{
+        config.local_port,
+        if (config.debug) (green ++ "开" ++ reset) else (yellow ++ "关" ++ reset),
+    });
     std.debug.print("\n", .{});
 }
 
